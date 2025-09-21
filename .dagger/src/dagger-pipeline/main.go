@@ -17,19 +17,55 @@ import (
 // entry point for all pipeline operations.
 type DaggerPipeline struct{}
 
+// The default git repository URL.
+// PLEASE REPLACE THIS with your actual Gerrit repository URL.
+const DefaultGitURL = "ssh://gerrit.example.com/your-repo.git"
+
+// Checkout clones the git repository using SSH.
+//
+// It uses the host's SSH agent to authenticate with the git server.
+// By default, it checks out the "develop" branch.
+//
+// Parameters:
+//   url: The SSH URL of the git repository to clone. Defaults to DefaultGitURL.
+//
+// Returns:
+//   A Dagger directory containing the checked-out source code.
+func (m *DaggerPipeline) Checkout(
+	ctx context.Context,
+	// +optional
+	url string,
+) (*dagger.Directory, error) {
+	if url == "" {
+		url = DefaultGitURL
+	}
+	// The SSH_AUTH_SOCK environment variable is automatically used by Dagger
+	// to forward the host's SSH agent to the container.
+	// We pass it as a secret to ensure it's handled securely.
+	sshSocket := dag.Host().EnvVariable("SSH_AUTH_SOCK").Secret()
+	return dag.Git(url, dagger.GitOpts{
+		SSHAuthSocket: sshSocket,
+	}).Branch("develop").Tree(), nil
+}
+
 // Ci runs the full continuous integration pipeline.
 //
-// It executes the SonarCloud scans for both the Spring Boot and Nuxt.js applications
-// in parallel to optimize for speed. If any of the scans fail, it aggregates the
-// errors and returns them all at the end, providing a complete report of the pipeline status.
+// It first checks out the source code from git, then executes the SonarCloud scans
+// for both the Spring Boot and Nuxt.js applications in parallel.
 //
 // This function requires a SONAR_TOKEN environment variable to be set on the host
-// for authenticating with SonarCloud.
+// for authenticating with SonarCloud, and a running SSH agent for git checkout.
 //
 // Example usage from the command line:
 //   export SONAR_TOKEN="your_sonar_cloud_token"
 //   dagger call ci
 func (m *DaggerPipeline) Ci(ctx context.Context) (string, error) {
+	// Checkout the source code first.
+	src, err := m.Checkout(ctx, "")
+	if err != nil {
+		return "", err
+	}
+
 	// It's a Dagger best practice to get secrets from the host environment.
 	// This prevents secrets from being hardcoded in the pipeline.
 	sonarToken := dag.Host().EnvVariable("SONAR_TOKEN").Secret()
@@ -46,7 +82,8 @@ func (m *DaggerPipeline) Ci(ctx context.Context) (string, error) {
 	// Run Spring Boot scan in a goroutine for parallel execution.
 	go func() {
 		defer wg.Done()
-		springBoot := m.SpringBoot()
+		// Pass the checked-out source code to the SpringBoot component.
+		springBoot := m.SpringBoot(src)
 		_, err := springBoot.Scan(ctx, sonarToken)
 		if err != nil {
 			mu.Lock()
@@ -58,7 +95,8 @@ func (m *DaggerPipeline) Ci(ctx context.Context) (string, error) {
 	// Run Nuxt.js scan in a goroutine for parallel execution.
 	go func() {
 		defer wg.Done()
-		nuxtJs := m.NuxtJs()
+		// Pass the checked-out source code to the NuxtJs component.
+		nuxtJs := m.NuxtJs(src)
 		_, err := nuxtJs.Scan(ctx, sonarToken)
 		if err != nil {
 			mu.Lock()
@@ -81,10 +119,10 @@ func (m *DaggerPipeline) Ci(ctx context.Context) (string, error) {
 //
 // This function acts as a factory for creating a new SpringBoot component,
 // which encapsulates all the logic for handling the Spring Boot application.
-func (m *DaggerPipeline) SpringBoot() *SpringBoot {
+func (m *DaggerPipeline) SpringBoot(src *dagger.Directory) *SpringBoot {
 	return &SpringBoot{
-		// Get a reference to the source code of the Spring Boot application on the host.
-		Src: dag.Host().Directory("./spring-boot-app"),
+		// Get a reference to the source code of the Spring Boot application from the provided directory.
+		Src: src.Directory("./spring-boot-app"),
 	}
 }
 
@@ -157,10 +195,10 @@ func (sb *SpringBoot) Scan(ctx context.Context, sonarToken *dagger.Secret) (stri
 //
 // This function acts as a factory for creating a new NuxtJs component,
 // which encapsulates all the logic for handling the Nuxt.js application.
-func (m *DaggerPipeline) NuxtJs() *NuxtJs {
+func (m *DaggerPipeline) NuxtJs(src *dagger.Directory) *NuxtJs {
 	return &NuxtJs{
-		// Get a reference to the source code of the Nuxt.js application on the host.
-		Src: dag.Host().Directory("./nuxt-app"),
+		// Get a reference to the source code of the Nuxt.js application from the provided directory.
+		Src: src.Directory("./nuxt-app"),
 	}
 }
 
