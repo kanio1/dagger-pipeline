@@ -31,5 +31,19 @@ services:
     command:
       - "start-dev"
 
+  keycloak-cli:
+    image: adorsys/keycloak-config-cli:latest
+    container_name: keycloak-cli
+    volumes:
+      - ./keycloak-config:/config
+    environment:
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_USER: admin
+      KEYCLOAK_PASSWORD: admin
+      IMPORT_FILES_LOCATIONS: /config/realm-export.json
+      KEYCLOAK_AVAILABILITYCHECK_ENABLED: "true"
+    depends_on:
+      - keycloak
+
 volumes:
   postgres_data:
