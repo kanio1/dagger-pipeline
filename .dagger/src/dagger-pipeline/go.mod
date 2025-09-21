@@ -2,7 +2,10 @@ module dagger-pipeline
 
 go 1.24.3
 
-require dagger.io/dagger v0.18.19
+require (
+	dagger.io/dagger v0.18.19
+	go.uber.org/multierr v1.11.0
+)
 
 require (
 	github.com/99designs/gqlgen v0.17.79 // indirect

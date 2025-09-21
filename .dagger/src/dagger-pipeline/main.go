@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
-	"os"
+	"sync"
 
 	"dagger.io/dagger"
+	"go.uber.org/multierr"
 )
 
 // DaggerPipeline is the main struct for the CI pipeline.
@@ -12,48 +13,64 @@ type DaggerPipeline struct{}
 
 // Ci is the main entry point for the CI pipeline.
 func (m *DaggerPipeline) Ci(ctx context.Context) (string, error) {
-	client, err := dagger.Connect(ctx, dagger.WithLogOutput(os.Stderr))
-	if err != nil {
-		return "", err
-	}
-	defer client.Close()
+	sonarToken := dag.Host().EnvVariable("SONAR_TOKEN").Secret()
 
-	sonarToken := client.Host().EnvVariable("SONAR_TOKEN").Secret()
+	var (
+		wg      sync.WaitGroup
+		allErrs error
+		mu      sync.Mutex // to protect allErrs
+	)
 
-	// Spring Boot
-	springBoot := m.SpringBoot(client)
-	_, err = springBoot.Scan(ctx, sonarToken)
-	if err != nil {
-		return "", err
-	}
+	wg.Add(2)
 
-	// Nuxt.js
-	nuxtJs := m.NuxtJs(client)
-	_, err = nuxtJs.Scan(ctx, sonarToken)
-	if err != nil {
-		return "", err
+	// Run Spring Boot scan in a goroutine
+	go func() {
+		defer wg.Done()
+		springBoot := m.SpringBoot()
+		_, err := springBoot.Scan(ctx, sonarToken)
+		if err != nil {
+			mu.Lock()
+			allErrs = multierr.Append(allErrs, err)
+			mu.Unlock()
+		}
+	}()
+
+	// Run Nuxt.js scan in a goroutine
+	go func() {
+		defer wg.Done()
+		nuxtJs := m.NuxtJs()
+		_, err := nuxtJs.Scan(ctx, sonarToken)
+		if err != nil {
+			mu.Lock()
+			allErrs = multierr.Append(allErrs, err)
+			mu.Unlock()
+		}
+	}()
+
+	wg.Wait()
+
+	if allErrs != nil {
+		return "", allErrs
 	}
 
 	return "CI pipeline finished successfully", nil
 }
 
 // SpringBoot returns a new SpringBoot component.
-func (m *DaggerPipeline) SpringBoot(client *dagger.Client) *SpringBoot {
+func (m *DaggerPipeline) SpringBoot() *SpringBoot {
 	return &SpringBoot{
-		Client: client,
-		Src:    client.Host().Directory("./spring-boot-app"),
+		Src: dag.Host().Directory("./spring-boot-app"),
 	}
 }
 
 // SpringBoot is a component for building and scanning the Spring Boot application.
 type SpringBoot struct {
-	Client *dagger.Client
-	Src    *dagger.Directory
+	Src *dagger.Directory
 }
 
 func (sb *SpringBoot) builder() *dagger.Container {
-	mavenCache := sb.Client.CacheVolume("maven-cache")
-	return sb.Client.Container().From("maven:3.9.8-eclipse-temurin-21").
+	mavenCache := dag.CacheVolume("maven-cache")
+	return dag.Container().From("maven:3.9.8-eclipse-temurin-21").
 		WithMountedCache("/root/.m2", mavenCache).
 		WithMountedDirectory("/app", sb.Src).
 		WithWorkdir("/app")
@@ -62,7 +79,7 @@ func (sb *SpringBoot) builder() *dagger.Container {
 // Build builds the Spring Boot application and returns a container with the application.
 func (sb *SpringBoot) Build(ctx context.Context) (*dagger.Container, error) {
 	builder := sb.builder().WithExec([]string{"mvn", "clean", "package"})
-	app := sb.Client.Container().From("eclipse-temurin:21-jre-alpine").
+	app := dag.Container().From("eclipse-temurin:21-jre-alpine").
 		WithDirectory("/app", builder.Directory("/app/target")).
 		WithWorkdir("/app").
 		WithExposedPort(8080).
@@ -79,22 +96,20 @@ func (sb *SpringBoot) Scan(ctx context.Context, sonarToken *dagger.Secret) (stri
 }
 
 // NuxtJs returns a new NuxtJs component.
-func (m *DaggerPipeline) NuxtJs(client *dagger.Client) *NuxtJs {
+func (m *DaggerPipeline) NuxtJs() *NuxtJs {
 	return &NuxtJs{
-		Client: client,
-		Src:    client.Host().Directory("./nuxt-app"),
+		Src: dag.Host().Directory("./nuxt-app"),
 	}
 }
 
 // NuxtJs is a component for building and scanning the Nuxt.js application.
 type NuxtJs struct {
-	Client *dagger.Client
-	Src    *dagger.Directory
+	Src *dagger.Directory
 }
 
 func (nj *NuxtJs) builder() *dagger.Container {
-	pnpmCache := nj.Client.CacheVolume("pnpm-cache")
-	return nj.Client.Container().From("node:22.19.0-slim").
+	pnpmCache := dag.CacheVolume("pnpm-cache")
+	return dag.Container().From("node:22.19.0-slim").
 		WithExec([]string{"corepack", "enable"}).
 		WithMountedCache("/root/.local/share/pnpm/store", pnpmCache).
 		WithMountedDirectory("/app", nj.Src).
