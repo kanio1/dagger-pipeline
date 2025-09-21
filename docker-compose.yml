@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16
@@ -25,7 +23,7 @@ services:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
     ports:
-      - "8180:8080" # Using 8180 to avoid conflict with spring boot app
+      - "8180:8080"
     depends_on:
       - postgres
     command:
@@ -44,6 +42,33 @@ services:
       KEYCLOAK_AVAILABILITYCHECK_ENABLED: "true"
     depends_on:
       - keycloak
+
+  nuxt-app:
+    build:
+      context: ./nuxt-app
+    ports:
+      - "3000:3000"
+    container_name: nuxt-app
+
+  playwright:
+    profiles:
+      - playwright
+    build:
+      context: ./nuxt-app
+      dockerfile: Dockerfile.playwright
+    depends_on:
+      - nuxt-app
+    container_name: playwright
+    command: >
+      sh -c "
+        if [ \"$HEADED_MODE\" = \"true\" ]; then
+          pnpm run test:e2e --headed;
+        else
+          pnpm run test:e2e;
+        fi
+      "
+    environment:
+      - HEADED_MODE=${HEADED_MODE:-false}
 
 volumes:
   postgres_data:
