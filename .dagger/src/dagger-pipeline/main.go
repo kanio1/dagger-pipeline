@@ -211,25 +211,36 @@ type NuxtJs struct {
 	Src *dagger.Directory
 }
 
-// builder sets up a base Node.js container for building and scanning.
+// builder creates a base Node.js container with dependencies installed.
 //
-// This private helper method creates a container with the correct Node.js version,
-// enables corepack for pnpm support, mounts the application source code, and configures
-// a cache for pnpm dependencies.
+// This function optimizes caching by separating dependency installation from
+// source code mounting. It only mounts the 'package.json' and 'pnpm-lock.yaml' files,
+// runs 'pnpm install', and then returns a container with the node_modules directory
+// fully cached. This container can be used as a base for subsequent build and scan steps.
+//
+// This is a Dagger best practice because this step will only be re-run if the
+// dependency files change, not on every source code change.
 //
 // Returns:
-//   A configured Dagger container ready for building or scanning.
+//   A Dagger container with all Node.js dependencies pre-installed.
 func (nj *NuxtJs) builder() *dagger.Container {
 	// Use a named cache volume to persist the pnpm store between pipeline runs.
 	pnpmCache := dag.CacheVolume("pnpm-cache")
-	return dag.Container().From("node:22.19.0-slim").
+
+	// Create a base container with only the necessary dependency files.
+	// By explicitly selecting only package.json and pnpm-lock.yaml, we ensure
+	// that the dependency installation step is only re-run when these files change.
+	deps := dag.Container().From("node:22.19.0-slim").
 		WithExec([]string{"corepack", "enable"}).
 		WithMountedCache("/root/.local/share/pnpm/store", pnpmCache).
-		WithMountedDirectory("/app", nj.Src).
 		WithWorkdir("/app").
-		// We run pnpm install in the builder to ensure all dependencies are available
-		// for subsequent build and scan steps.
+		WithFile("/app/package.json", nj.Src.File("package.json")).
+		WithFile("/app/pnpm-lock.yaml", nj.Src.File("pnpm-lock.yaml")).
 		WithExec([]string{"pnpm", "install"})
+
+	// Mount the rest of the source code onto the container with pre-installed dependencies.
+	// This creates the final builder container for running build or scan commands.
+	return deps.WithMountedDirectory("/app", nj.Src)
 }
 
 // Build builds the Nuxt.js application and returns the build artifacts.
