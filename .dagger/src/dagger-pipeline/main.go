@@ -135,21 +135,32 @@ type SpringBoot struct {
 	Src *dagger.Directory
 }
 
-// builder sets up a base Maven container for building and scanning.
+// builder creates a base Maven container with dependencies pre-downloaded.
 //
-// This private helper method creates a container with the correct Maven and Java versions,
-// mounts the application source code, and configures a cache for Maven dependencies.
-// This ensures that dependencies are not re-downloaded on every run, speeding up the pipeline.
+// This function optimizes caching by separating dependency resolution from source
+// code mounting. It first mounts only the `pom.xml` file and runs the `dependency:go-offline`
+// goal. This ensures that the dependency download step is only re-run when the `pom.xml`
+// file changes. The full source code is then mounted onto this base container.
+//
+// This is a Dagger best practice that significantly speeds up pipeline runs when
+// only application code has changed.
 //
 // Returns:
-//   A configured Dagger container ready for building or scanning.
+//   A Dagger container with all Maven dependencies pre-downloaded.
 func (sb *SpringBoot) builder() *dagger.Container {
 	// Use a named cache volume to persist the Maven repository between pipeline runs.
 	mavenCache := dag.CacheVolume("maven-cache")
-	return dag.Container().From("maven:3.9.8-eclipse-temurin-21").
+
+	// Create a base container with only pom.xml to resolve and download dependencies.
+	// This step is cached and will only re-run if pom.xml changes.
+	deps := dag.Container().From("maven:3.9.8-eclipse-temurin-21").
 		WithMountedCache("/root/.m2", mavenCache).
-		WithMountedDirectory("/app", sb.Src).
-		WithWorkdir("/app")
+		WithWorkdir("/app").
+		WithFile("/app/pom.xml", sb.Src.File("pom.xml")).
+		WithExec([]string{"mvn", "dependency:go-offline"})
+
+	// Mount the rest of the source code onto the container with pre-downloaded dependencies.
+	return deps.WithMountedDirectory("/app", sb.Src)
 }
 
 // Build builds the Spring Boot application and returns a runnable OCI container.
