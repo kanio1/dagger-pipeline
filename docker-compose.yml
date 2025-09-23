@@ -59,14 +59,6 @@ services:
     depends_on:
       - nuxt-app
     container_name: playwright
-    command: >
-      sh -c "
-        if [ \"$HEADED_MODE\" = \"true\" ]; then
-          pnpm run test:e2e --headed;
-        else
-          pnpm run test:e2e;
-        fi
-      "
     environment:
       - HEADED_MODE=${HEADED_MODE:-false}
 
