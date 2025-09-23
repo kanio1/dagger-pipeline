@@ -7,4 +7,9 @@ RUN pnpm install
 
 COPY . .
 
-CMD ["pnpm", "run", "test:e2e"]
+# Skopiuj skrypt i nadaj mu uprawnienia do wykonania
+COPY run-tests.sh .
+RUN chmod +x run-tests.sh
+
+# Ustaw skrypt jako domyślne polecenie
+CMD ["./run-tests.sh"]
